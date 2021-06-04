@@ -1,0 +1,162 @@
+#!/bin/bash
+###################################################################
+#Script Name	:generateSDIcertificates
+#Description	:The script will
+#                   (1)change the password for testadmin.jks, testadmin.jks, and idisrv.sth
+#                   (2)generate new certificates for both store files
+#                   (3)update solution.properties with the new passwords
+#Author       	:Anoop Tripathi
+#Email         	:anoopk@in.ibm.com
+#
+#INFO: Run as user which owns SDI Install Directory and Solution Directory
+###################################################################
+
+dtstr=$(date +"%m-%d-%Y"-%R)
+dstr=$(date +"%m-%d-%Y")
+pauseInt=3
+PROGNAME=$(basename $0)
+
+# Environment information
+echo "++++++++++++++++++++++++++++++++++++"$PROGNAME"++++++++++++++++++++++++++++++++++++"
+while [ -z "$installdir" ]; do
+    read -p '> Enter Install Directory for SDI (e.g., "/opt/IBM/TDI/V7.2" ): ' installdir
+done
+while [ -z "$solutiondir" ]; do
+    soldir=$(cat $installdir/bin/defaultSolDir.sh | sed '/^TDI_SOLDIR= */!d; s///;q')
+    read -p "> Enter Solution Directory for solution.properties (e.g., "$soldir"): " solutiondir
+done
+while [ -z "$updateinstalldir" ]; do
+    read -p "> Modify Install Directory resources along with Solution Directory resources? (e.g., False): " updateinstalldir
+    typeset -l $updateinstalldir
+done
+
+# Resource backup
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo -e "Creating backup of files changed through this script in "$solutiondir" (Permissions permitting)\n"
+tar -czg snapshot-file -f $solutiondir/certficateBackup.$dstr.tar.gz --absolute-names $solutiondir/serverapi/testadmin.jks $solutiondir/testserver.jks $solutiondir/solution.properties $solutiondir/idisrv.sth
+sleep $pauseInt
+cp $solutiondir/serverapi/testadmin.jks $solutiondir/serverapi/testadmin.jks$dtstr
+cp $solutiondir/testserver.jks $solutiondir/testserver.jks.backup$dtstr
+cp $solutiondir/solution.properties $solutiondir/solution.properties$dtstr
+sleep $pauseInt
+
+if [[ $updateinstalldir = "true" ]]; then
+    echo -e "Creating backup of files changed through this script in "$installdir" (Permissions permitting)\n"
+    tar -czg snapshot-file -f $installdir/certficateBackup.$dstr.tar.gz --absolute-names $installdir/serverapi/testadmin.jks $installdir/testserver.jks $installdir/etc/global.properties $installdir/idisrv.sth
+    sleep $pauseInt
+fi
+
+# Collect passwords
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo -e "Collect current passwords and new passwords\n"
+while [ -z "$serverpass" ]; do
+    echo -e "Password should not be blank please enter valid password\n"
+    read -p '> Enter existing testserver.jks password (e.g., server): ' serverpass
+    ESCAPED_serverpass=$(printf '%s\n' "$serverpass" | sed 's/\([[:punct:]]\)/\\\1/g')
+done
+while [ -z "$adminpass" ]; do
+    echo -e "Password should not be blank please enter valid password\n"
+    read -p '> Enter existing testadmin.jks password (e.g., administrator): ' adminpass
+    ESCAPED_adminpass=$(printf '%s\n' "$adminpass" | sed 's/\([[:punct:]]\)/\\\1/g')
+done
+echo "$ Current password: " $serverpass " - Escaped: " $ESCAPED_serverpass
+echo "$ Current password: " $adminpass " - Escaped: " $ESCAPED_adminpass
+
+while [ -z "$serverpassnew" ]; do
+    echo -e "Password should not be blank please enter valid password\n"
+    read -p '> Enter NEW testserver.jks password: ' serverpassnew
+    ESCAPED_serverpassnew=$(printf '%s\n' "$serverpassnew" | sed 's/\([[:punct:]]\)/\\\1/g')
+done
+while [ -z "$adminpassnew" ]; do
+    echo -e "Password should not be blank please enter valid password\n"
+    read -p '> Enter NEW testadmin.jks password: ' adminpassnew
+    ESCAPED_adminpassnew=$(printf '%s\n' "$adminpassnew" | sed 's/\([[:punct:]]\)/\\\1/g')
+done
+echo "$ New password: " $serverpassnew " - Escaped: " $ESCAPED_serverpassnew
+echo "$ New password: " $adminpassnew " - Escaped: " $ESCAPED_adminpassnew
+
+# Decrypt properties
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo "# Decrypt protected values in " $solutiondir"/solution.properties"
+$installdir/serverapi/cryptoutils.sh -input $solutiondir/solution.properties -output $solutiondir/solution.properties_plain -mode decrypt_props -keystore $solutiondir/testserver.jks -storepass $serverpass -alias server
+sleep $pauseInt
+if [[ $updateinstalldir == "true" ]]; then
+    echo "# Decrypt protected values in " $installdir"/etc/global.properties"
+    $installdir/serverapi/cryptoutils.sh -input $installdir/etc/global.properties -output $installdir/etc/global.properties_plain -mode decrypt_props -keystore $installdir/testserver.jks -storepass $serverpass -alias server
+fi
+
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo "# Change key password and store password for both jks files"
+sleep $pauseInt
+$installdir/jvm/jre/bin/keytool -keypasswd -alias admin -keypass $adminpass -new $adminpassnew -keystore $solutiondir/serverapi/testadmin.jks -storepass $adminpass
+$installdir/jvm/jre/bin/keytool -keypasswd -alias server -keypass $serverpass -new $serverpassnew -keystore $solutiondir/testserver.jks -storepass $serverpass
+$installdir/jvm/jre/bin/keytool -storepasswd -new $adminpassnew -keystore $solutiondir/serverapi/testadmin.jks -storepass $adminpass
+sleep $pauseInt
+$installdir/jvm/jre/bin/keytool -storepasswd -new $serverpassnew -keystore $solutiondir/testserver.jks -storepass $serverpass
+sleep $pauseInt
+
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo "# Delete current alias(s) from the jks files"
+$installdir/jvm/jre/bin/keytool -delete -alias server -keystore $solutiondir/testserver.jks -storepass $serverpassnew
+sleep $pauseInt
+$installdir/jvm/jre/bin/keytool -delete -alias admin -keystore $solutiondir/testserver.jks -storepass $serverpassnew
+sleep $pauseInt
+$installdir/jvm/jre/bin/keytool -delete -alias admin -keystore $solutiondir/serverapi/testadmin.jks -storepass $adminpassnew
+sleep $pauseInt
+$installdir/jvm/jre/bin/keytool -delete -alias server -keystore $solutiondir/serverapi/testadmin.jks -storepass $adminpassnew
+sleep $pauseInt
+
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo "# Generate a public/private key pair and a self-signed certificate for both jks files"
+# If the DN values are changed in the following commands, the $solutiondir/serverapi/registry.txt must be updated
+$installdir/jvm/jre/bin/keytool -genkeypair -dname "CN=API Admin, OU=test, O=test, L=test, ST=test, C=US" -alias server -keypass $serverpassnew -keystore $solutiondir/testserver.jks -storepass $serverpassnew -validity 1095 -keyalg RSA -keysize 2048 -storetype jks -noprompt
+sleep $pauseInt
+$installdir/jvm/jre/bin/keytool -genkeypair -dname "CN=API Admin, OU=test, O=test, L=test, ST=test, C=US" -alias admin -keypass $adminpassnew -keystore $solutiondir/serverapi/testadmin.jks -storepass $adminpassnew -validity 1095 -keyalg RSA -keysize 2048 -storetype jks -noprompt
+
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo "# Export public Certificates to exchange between jks files"
+sleep $pauseInt
+$installdir/jvm/jre/bin/keytool -exportcert -alias admin -file $solutiondir/serverapi/testadmin.der -storetype jks -keystore $solutiondir/serverapi/testadmin.jks -storepass $adminpassnew
+sleep $pauseInt
+$installdir/jvm/jre/bin/keytool -exportcert -alias server -file $solutiondir/testserver.der -storetype jks -keystore $solutiondir/testserver.jks -storepass $serverpassnew
+
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo "# Import 'admin' certificate into testserver.jks and label as alias 'admin'"
+sleep $pauseInt
+$installdir/jvm/jre/bin/keytool -importcert -alias admin -file $solutiondir/serverapi/testadmin.der -storetype jks -keystore $solutiondir/testserver.jks -storepass $serverpassnew -noprompt
+
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo "# Import 'server' certificate into testadmin.jks and label as alias 'server'"
+sleep $pauseInt
+$installdir/jvm/jre/bin/keytool -importcert -alias server -file $solutiondir/testserver.der -storetype jks -keystore $solutiondir/serverapi/testadmin.jks -storepass $adminpassnew -noprompt
+
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo "# Copy solution.properties_plain to solution.properties"
+cp -p $solutiondir/solution.properties_plain $solutiondir/solution.properties
+
+echo "# Update solution.properties with new passwords"
+sed -i -r "s/((^\{protect\})(.*)($ESCAPED_serverpass$))/\2\3$ESCAPED_serverpassnew/g" $solutiondir/solution.properties
+sed -i -r "s/((^\{protect\})(.*)($ESCAPED_adminpass$))/\2\3$ESCAPED_adminpassnew/g" $solutiondir/solution.properties
+
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo "# Create stach 'idisrv.sth' file in directory: " $solutiondir
+cd $solutiondir && $installdir/bin/createstash.sh $serverpassnew $serverpassnew
+
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo "### Certicate Change Process Complete ###"
+echo "##"
+echo "## **** Change report ****"
+echo "## New password: "$serverpassnew" for "$solutiondir/testserver.jks
+echo "## New password: "$adminpassnew" for "$solutiondir/serverapi/testadmin.jks
+echo "## New passwords updated in $solutiondir/solution.properties"
+echo "## "$solutiondir"/idisrv.sth created with "$serverpassnew" password"
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+echo "## NOTE: Manaul steps must be taken to decrypt protected values found in " \
+    "custom properties file. With the values decrypted, take steps to move the clear " \
+    "value(s) into the custom property file read by the solution for on the next SDI " \
+    "Server start, the server will protect the values with the current 'server' " \
+    "certificate found in the "$solutiondir/testserver.jks
+echo ">> Example command: "$installdir/serverapi/cryptoutils.sh -input 'your.custom.property' -output 'your.custom.property_clear' -mode decrypt_props -keystore $solutiondir/testserver.jks.backup$dtstr -storepass $serverpass -alias server
+echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+
+    
